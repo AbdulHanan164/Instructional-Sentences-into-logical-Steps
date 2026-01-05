@@ -1,3 +1,6 @@
+.env
 __pycache__/
 *.pyc
-.env
+requests.log
+webhook_errors.log
+steps_tts.mp3
