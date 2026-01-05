@@ -6,7 +6,7 @@ from datetime import datetime
 
 import requests
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
@@ -24,19 +24,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================================================
-# OPENAI CONFIG (DEMO ONLY)
-# =====================================================
-
-
 client = OpenAI()
 
 # =====================================================
-# WEBHOOK CONFIG
+# WEBHOOK CONFIG (ENV BASED)
 # =====================================================
 
-WEBHOOK_ENABLED = True
-WEBHOOK_URL = "https://webhook.site/YOUR-UNIQUE-URL"
+WEBHOOK_ENABLED = os.getenv("WEBHOOK_ENABLED", "false").lower() == "true"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # =====================================================
 # HTML MIC PAGE
@@ -131,31 +126,51 @@ def log_request(filename: str, instruction_count: int):
         f.write(f"{ts} | file={filename} | instructions={instruction_count}\n")
 
 # =====================================================
-# WEBHOOK SENDER (SAFE)
+# WEBHOOK
 # =====================================================
 
 def send_webhook(payload: dict):
-    if not WEBHOOK_ENABLED:
+    if not WEBHOOK_ENABLED or not WEBHOOK_URL:
         return
-
     try:
-        requests.post(
-            WEBHOOK_URL,
-            json=payload,
-            timeout=5
-        )
+        requests.post(WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
         with open("webhook_errors.log", "a", encoding="utf-8") as f:
             f.write(str(e) + "\n")
 
 # =====================================================
-# MAIN API ENDPOINT
+# TTS (SPEAK STEPS)
+# =====================================================
+
+@app.post("/speak-steps")
+def speak_steps(steps: list[str]):
+    combined = ". ".join(steps)
+
+    audio = client.audio.speech.create(
+        model="tts-1",
+        voice="alloy",
+        input=combined
+    )
+
+    out_path = "steps_tts.mp3"
+    with open(out_path, "wb") as f:
+        f.write(audio.read())
+
+    return FileResponse(out_path, media_type="audio/mpeg", filename="steps.mp3")
+
+# =====================================================
+# MAIN API
 # =====================================================
 
 @app.post("/analyze-audio")
 async def analyze_audio(file: UploadFile = File(...)):
 
-    if not file.filename.lower().endswith((".wav", ".mp3", ".m4a")):
+    filename = file.filename.lower() if file.filename else ""
+
+    if not (
+        filename.endswith((".wav", ".mp3", ".m4a"))
+        or (file.content_type and file.content_type.startswith("audio/"))
+    ):
         return JSONResponse(
             status_code=400,
             content={"error": "Unsupported audio format"},
@@ -186,7 +201,7 @@ async def analyze_audio(file: UploadFile = File(...)):
         }
     }
 
-    log_request(file.filename, result["meta"]["instruction_count"])
+    log_request(file.filename or "recorded_audio", result["meta"]["instruction_count"])
 
     if result["meta"]["instruction_count"] > 0:
         send_webhook(result)
